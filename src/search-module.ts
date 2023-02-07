@@ -67,6 +67,31 @@ export async function searchForNodeModules(cwd: string, rootPath?: string): Prom
   return traverseAncestorDirectories(cwd, pathGenerator, rootPath, undefined, true);
 }
 
+function* splitPath(cwd:string) {
+  for(let part = path.parse(path.resolve(cwd)); part.base !== ""; part = path.parse(part.dir)) {
+    yield path.join(part.dir, part.base);
+  }
+}
+
+type NodeModuleEntry = {
+  path: string;
+  manifest: string;
+  hasLockfile: boolean;
+};
+
+async function* getNodeModulePaths(cwd:string) : AsyncGenerator<NodeModuleEntry> {
+  for (const part of splitPath(cwd)) {
+    const manifest = path.join(part, "package.json");
+    if (await fs.pathExists(manifest)) {
+      yield {
+        path:part,
+        manifest: manifest,
+        hasLockfile: await fs.pathExists(path.join(part, "package-lock.json")) || await fs.pathExists(path.join(part, "yarn.lock"))
+      };
+    }
+  }
+}
+
 /**
  * Determine the root directory of a given project, by looking for a directory with an
  * NPM or yarn lockfile.
@@ -74,13 +99,17 @@ export async function searchForNodeModules(cwd: string, rootPath?: string): Prom
  * @param cwd the initial directory to traverse
  */
 export async function getProjectRootPath(cwd: string): Promise<string> {
-  for (const lockFilename of ['yarn.lock', 'package-lock.json']) {
-    const pathGenerator: PathGeneratorFunction = (traversedPath) => path.join(traversedPath, lockFilename);
-    const lockPaths = await traverseAncestorDirectories(cwd, pathGenerator, undefined, 1)
-    if (lockPaths.length > 0) {
-      return path.dirname(lockPaths[0]);
+  let candidate = path.resolve(cwd);
+
+  for await (const root of getNodeModulePaths(cwd)) {
+    if (root.hasLockfile) {
+      candidate = root.path;
+      const manifest = JSON.parse(await fs.readFile(root.manifest, {encoding: "utf-8"}));
+      if ("workspaces" in manifest) {
+        break;
+      }
     }
   }
 
-  return cwd;
+  return candidate;
 }
